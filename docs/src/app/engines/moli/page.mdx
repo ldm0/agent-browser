@@ -1,0 +1,81 @@
+# Moli
+
+[Moli](https://github.com/lexmount/moli) is a production-ready headless browser for AI agents, built in Rust. It combines a complete JavaScript and DOM runtime with real layout and software rendering that run only when needed.
+
+agent-browser launches Moli as a local CDP engine, manages its lifecycle, and exposes snapshots, `@eN` refs, interaction commands, and visual output through one workflow.
+
+## Why Moli
+
+Moli is designed specifically for browser agents:
+
+- **Complete browser runtime:** V8 JavaScript, native DOM, CSS, networking, cookies, storage, iframes, and workers run in one browser kernel.
+- **Real visual output:** On-demand layout and software rendering provide pixel geometry, hit-testing, screenshots, PDFs, and screencasts.
+- **Structure-first efficiency:** DOM queries, JavaScript evaluation, snapshots, and extraction avoid layout and paint until visual work is requested.
+- **Agent-friendly cost controls:** Layout, images, fonts, media, cache, and persistence are explicit policies instead of permanent background costs.
+- **Standard automation:** CDP, WebDriver Classic, and WebDriver BiDi share the same runtime, with unsupported protocol paths returning explicit errors.
+- **Production-ready scope:** Moli is tested against real websites, automation clients, focused browser behavior suites, and large regression suites.
+
+## Installation
+
+Download a prebuilt archive directly from [Moli Releases](https://github.com/lexmount/moli/releases/latest):
+
+<table>
+  <thead>
+    <tr><th>Platform</th><th>Command</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Linux x86_64</td><td><code>curl -L -o moli.tar.gz https://github.com/lexmount/moli/releases/latest/download/moli-x86_64-unknown-linux-gnu.tar.gz</code></td></tr>
+    <tr><td>macOS Apple Silicon</td><td><code>curl -L -o moli.tar.gz https://github.com/lexmount/moli/releases/latest/download/moli-aarch64-apple-darwin.tar.gz</code></td></tr>
+    <tr><td>macOS Intel</td><td><code>curl -L -o moli.tar.gz https://github.com/lexmount/moli/releases/latest/download/moli-x86_64-apple-darwin.tar.gz</code></td></tr>
+    <tr><td>Windows x86_64</td><td><code>curl.exe -L -o moli.zip https://github.com/lexmount/moli/releases/latest/download/moli-x86_64-pc-windows-msvc.zip</code></td></tr>
+  </tbody>
+</table>
+
+Extract the archive and move `moli` or `moli.exe` into your `PATH`. agent-browser also checks `~/.local/bin/moli` and `~/.cargo/bin/moli` on Linux and macOS, plus `%LOCALAPPDATA%\Moli\bin\moli.exe` on Windows. Run `moli --version` to verify the binary, or use `--executable-path` if you keep it elsewhere.
+
+## Usage
+
+Select Moli with `--engine`:
+
+```bash
+agent-browser --engine moli open https://example.com
+agent-browser snapshot -i
+agent-browser click @e1
+agent-browser screenshot page.png
+agent-browser pdf page.pdf
+```
+
+Set it as the default engine with an environment variable or `agent-browser.json`:
+
+```bash
+export AGENT_BROWSER_ENGINE=moli
+```
+
+```json
+{
+  "engine": "moli"
+}
+```
+
+## Automatic Layout
+
+agent-browser starts Moli with `--layout` automatically. Geometry, coordinate input, screenshots, annotated screenshots, PDFs, and screencasts therefore work without additional setup. Layout and paint remain on demand, so DOM and snapshot operations do not continuously pay the rendering cost.
+
+Moli keeps optional image, font, and media resources disabled by default. If a page needs them, start Moli separately with `--resource` and attach through CDP:
+
+```bash
+moli serve --host 127.0.0.1 --port 9222 --layout --resource
+agent-browser --cdp http://127.0.0.1:9222 open https://example.com
+```
+
+## Custom Binary Path
+
+```bash
+agent-browser --engine moli --executable-path /path/to/moli open https://example.com
+```
+
+## Current Limits
+
+Moli implements the CDP capabilities needed by its documented automation scope. agent-browser currently rejects extensions, `--profile`, storage state files, headed mode, WebGPU, file access, and custom `--args` when Moli is selected. Unsupported protocol paths return explicit errors.
+
+Moli is a strong fit for crawling, retrieval pipelines, browser-use agents, evaluation environments, and other workloads that combine structure-first automation with occasional visual output.

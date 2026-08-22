@@ -179,7 +179,7 @@
     },
     "engine": {
       "type": "string",
-      "enum": ["chrome", "lightpanda"],
+      "enum": ["chrome", "lightpanda", "moli"],
       "default": "chrome",
       "description": "Browser engine to use."
     },

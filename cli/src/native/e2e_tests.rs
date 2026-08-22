@@ -357,6 +357,49 @@ async fn e2e_lightpanda_auto_launch_can_open_page() {
     assert_eq!(get_data(&resp)["closed"], true);
 }
 
+#[tokio::test]
+#[ignore]
+async fn e2e_moli_launch_can_open_page() {
+    let moli_bin = match std::env::var("MOLI_BIN") {
+        Ok(path) if !path.is_empty() => path,
+        _ => return,
+    };
+
+    let mut state = DaemonState::new();
+
+    let resp = tokio::time::timeout(
+        tokio::time::Duration::from_secs(20),
+        execute_command(
+            &json!({
+                "id": "1",
+                "action": "launch",
+                "headless": true,
+                "engine": "moli",
+                "executablePath": moli_bin,
+            }),
+            &mut state,
+        ),
+    )
+    .await
+    .expect("Moli launch should not hang");
+
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["launched"], true);
+
+    let resp = execute_command(
+        &json!({ "id": "2", "action": "navigate", "url": "https://example.com" }),
+        &mut state,
+    )
+    .await;
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["url"], "https://example.com/");
+    assert_eq!(get_data(&resp)["title"], "Example Domain");
+
+    let resp = execute_command(&json!({ "id": "3", "action": "close" }), &mut state).await;
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["closed"], true);
+}
+
 // ---------------------------------------------------------------------------
 // Runtime stream lifecycle
 // ---------------------------------------------------------------------------

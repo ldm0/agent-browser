@@ -1063,7 +1063,7 @@ async fn dispatch_click(
 
     // Release. A dialog here fired from the click/mouseup handler, which runs
     // after the button is already up, so there is nothing left to release.
-    let dialog_opened = dispatch_mouse_or_dialog(
+    let dialog_opened = match dispatch_mouse_or_dialog(
         client,
         session_id,
         accept_sessions,
@@ -1079,11 +1079,24 @@ async fn dispatch_click(
             modifiers: None,
         },
     )
-    .await?;
+    .await
+    {
+        Ok(dialog_opened) => dialog_opened,
+        // A link may commit a navigation while the browser is acknowledging
+        // mouseReleased. Moli reports that successful document swap as
+        // NoDocumentLoaded; the press and release were both processed, so the
+        // click must not be surfaced as a failure.
+        Err(error) if navigation_committed_during_release(&error) => false,
+        Err(error) => return Err(error),
+    };
     Ok(ClickResult {
         dialog_opened,
         pending_release: None,
     })
+}
+
+fn navigation_committed_during_release(error: &str) -> bool {
+    error.ends_with(": NoDocumentLoaded")
 }
 
 /// Best-effort mouseReleased to clear a button left logically down when a
@@ -1333,5 +1346,15 @@ mod tests {
         assert_eq!(key_text("ArrowUp"), None);
         assert_eq!(key_text("Backspace"), None);
         assert_eq!(key_text("Delete"), None);
+    }
+
+    #[test]
+    fn recognizes_document_swap_during_mouse_release() {
+        assert!(navigation_committed_during_release(
+            "CDP error (Input.dispatchMouseEvent): NoDocumentLoaded"
+        ));
+        assert!(!navigation_committed_during_release(
+            "CDP error (Input.dispatchMouseEvent): target closed"
+        ));
     }
 }

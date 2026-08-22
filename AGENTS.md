@@ -95,7 +95,7 @@ Match the existing style in that file.
 
 ## Architecture
 
-This is a Rust codebase. The browser automation daemon lives in `cli/src/native/` (daemon, actions, browser, CDP client, snapshot, state). The `--engine` flag selects Chrome vs Lightpanda. The `install` command downloads Chrome from Chrome for Testing directly.
+This is a Rust codebase. The browser automation daemon lives in `cli/src/native/` (daemon, actions, browser, CDP client, snapshot, state). The `--engine` flag selects Chrome, Lightpanda, or Moli. The `install` command downloads Chrome from Chrome for Testing directly.
 
 ## Testing
 
