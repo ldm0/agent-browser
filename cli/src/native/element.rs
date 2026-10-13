@@ -320,10 +320,59 @@ pub(super) async fn frame_owner_object_id(
         .ok_or_else(|| format!("No objectId for the owner element of frame {}", frame_id))
 }
 
+/// Call `(document, crossOrigin)` without changing the same-origin execution context.
+pub(super) async fn call_function_in_frame(
+    client: &CdpClient,
+    session_id: &str,
+    frame_id: &str,
+    owner_object_id: &str,
+    function: &str,
+    return_by_value: bool,
+) -> Result<Value, String> {
+    let result = client
+        .send_command(
+            "Runtime.callFunctionOn",
+            Some(serde_json::json!({
+                "objectId": owner_object_id,
+                "functionDeclaration": format!("function() {{ const doc = this.contentDocument; if (doc) return ({function})(doc) ?? null; }}"),
+                "returnByValue": return_by_value,
+            })),
+            Some(session_id),
+        )
+        .await?;
+    if result["result"]["type"] != "undefined" || result.get("exceptionDetails").is_some() {
+        return Ok(result);
+    }
+    // Cross-origin frames can share a process while hiding contentDocument.
+    let world = client
+        .send_command(
+            "Page.createIsolatedWorld",
+            Some(serde_json::json!({ "frameId": frame_id, "worldName": "agent-browser" })),
+            Some(session_id),
+        )
+        .await?;
+    let context_id = world["executionContextId"].as_i64().ok_or_else(|| {
+        format!(
+            "Could not resolve the execution context of frame {}",
+            frame_id
+        )
+    })?;
+    client
+        .send_command(
+            "Runtime.evaluate",
+            Some(serde_json::json!({
+                "contextId": context_id,
+                "expression": format!("({function})(document, true)"),
+                "objectGroup": "agent-browser",
+                "returnByValue": return_by_value,
+            })),
+            Some(session_id),
+        )
+        .await
+}
+
 /// Find a selector inside a same-process iframe and return its center in
 /// top-level viewport coordinates (input events dispatch in that space).
-/// Same-origin access to contentDocument is what makes this possible; a
-/// cross-origin frame never takes this path because it has its own session.
 async fn resolve_center_in_same_process_frame(
     client: &CdpClient,
     session_id: &str,
@@ -333,9 +382,7 @@ async fn resolve_center_in_same_process_frame(
     let owner_object_id = frame_owner_object_id(client, session_id, frame_id).await?;
     let find_expr = build_find_element_js_in("doc", selector);
     let function = format!(
-        r#"function() {{
-            const doc = this.contentDocument;
-            if (!doc) return null;
+        r#"(doc, crossOrigin = false) => {{
             const el = {find_expr};
             if (!el) return null;
             if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(true);
@@ -343,7 +390,7 @@ async fn resolve_center_in_same_process_frame(
             const rect = el.getBoundingClientRect();
             let x = rect.x + rect.width / 2;
             let y = rect.y + rect.height / 2;
-            let win = doc.defaultView;
+            let win = crossOrigin ? null : doc.defaultView;
             while (win && win.frameElement) {{
                 const frameRect = win.frameElement.getBoundingClientRect();
                 x += frameRect.x + win.frameElement.clientLeft;
@@ -352,26 +399,54 @@ async fn resolve_center_in_same_process_frame(
             }}
             const blockerAt = {BLOCKER_AT_JS};
             const topDoc = win ? win.document : doc;
-            return {{ x: x, y: y, blocker: blockerAt(topDoc, el, x, y) }};
+            return {{ x, y, local: crossOrigin || (win && win !== win.top), blocker: blockerAt(topDoc, el, x, y) }};
         }}"#,
     );
-    let result = client
-        .send_command(
-            "Runtime.callFunctionOn",
-            Some(serde_json::json!({
-                "objectId": owner_object_id,
-                "functionDeclaration": function,
-                "returnByValue": true,
-            })),
-            Some(session_id),
-        )
-        .await?;
+    let result = call_function_in_frame(
+        client,
+        session_id,
+        frame_id,
+        &owner_object_id,
+        &function,
+        true,
+    )
+    .await?;
     let value = result.get("result").and_then(|r| r.get("value"));
     if let Some(blocker) = value
         .and_then(|v| v.get("blocker"))
         .and_then(|v| v.as_str())
     {
         return Err(intercepted_error(selector, blocker));
+    }
+    if value.and_then(|v| v.get("local")).and_then(Value::as_bool) == Some(true) {
+        let element = call_function_in_frame(
+            client,
+            session_id,
+            frame_id,
+            &owner_object_id,
+            &format!("(doc) => {find_expr}"),
+            false,
+        )
+        .await?;
+        let object_id = element["result"]["objectId"]
+            .as_str()
+            .ok_or_else(|| format!("Element not found in the selected frame: {}", selector))?;
+        // JavaScript cannot walk ancestor offsets across an origin boundary.
+        let result: DomGetBoxModelResult = client
+            .send_command_typed(
+                "DOM.getBoxModel",
+                &DomGetBoxModelParams {
+                    backend_node_id: None,
+                    node_id: None,
+                    object_id: Some(object_id.to_string()),
+                },
+                Some(session_id),
+            )
+            .await?;
+        if let [x1, y1, x2, y2, x3, y3, x4, y4] = result.model.border.as_slice() {
+            return Ok(((x1 + x2 + x3 + x4) / 4.0, (y1 + y2 + y3 + y4) / 4.0));
+        }
+        return Err(format!("Could not get bounding box for: {}", selector));
     }
     let x = value.and_then(|v| v.get("x")).and_then(|v| v.as_f64());
     let y = value.and_then(|v| v.get("y")).and_then(|v| v.as_f64());
@@ -393,20 +468,15 @@ async fn resolve_object_in_same_process_frame(
 ) -> Result<String, String> {
     let owner_object_id = frame_owner_object_id(client, session_id, frame_id).await?;
     let find_expr = build_find_element_js_in("doc", selector);
-    let function = format!(
-        "function() {{ const doc = this.contentDocument; if (!doc) return null; return {find_expr}; }}",
-    );
-    let result = client
-        .send_command(
-            "Runtime.callFunctionOn",
-            Some(serde_json::json!({
-                "objectId": owner_object_id,
-                "functionDeclaration": function,
-                "returnByValue": false,
-            })),
-            Some(session_id),
-        )
-        .await?;
+    let result = call_function_in_frame(
+        client,
+        session_id,
+        frame_id,
+        &owner_object_id,
+        &format!("(doc) => {find_expr}"),
+        false,
+    )
+    .await?;
     result
         .get("result")
         .and_then(|r| r.get("objectId"))

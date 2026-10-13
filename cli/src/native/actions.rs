@@ -6924,9 +6924,7 @@ async fn wait_for_function(
     poll_until_true(client, session_id, &check_fn, timeout_ms).await
 }
 
-/// wait_for_selector inside a same-process iframe selected via `frame <sel>`:
-/// polls through the owner element's contentDocument, which stays correct
-/// even if the frame navigates (the getter re-resolves every poll).
+/// Poll the selected same-process frame's current document, including after navigation.
 async fn wait_for_selector_in_frame(
     client: &super::cdp::client::CdpClient,
     session_id: &str,
@@ -6959,22 +6957,18 @@ async fn wait_for_selector_in_frame(
             }})()"#,
         ),
     };
-    let function = format!(
-        "function() {{ const doc = this.contentDocument; if (!doc) return false; return {check}; }}",
-    );
+    let function = format!("(doc) => {check}");
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
     loop {
-        let result = client
-            .send_command(
-                "Runtime.callFunctionOn",
-                Some(json!({
-                    "objectId": owner_object_id,
-                    "functionDeclaration": function,
-                    "returnByValue": true,
-                })),
-                Some(session_id),
-            )
-            .await?;
+        let result = super::element::call_function_in_frame(
+            client,
+            session_id,
+            frame_id,
+            &owner_object_id,
+            &function,
+            true,
+        )
+        .await?;
         let satisfied = result
             .get("result")
             .and_then(|r| r.get("value"))
@@ -10219,11 +10213,7 @@ async fn handle_presentational_getbyrole(
     action_result
 }
 
-/// Evaluate a `(root) => {...}` body against the active frame's document, or the
-/// top document when no frame is selected. Runtime.evaluate cannot target a
-/// same-origin child frame, so that case runs the body against the frame owner's
-/// contentDocument (as element resolution does); an OOPIF has its own session
-/// where `document` is already the frame document.
+/// Evaluate a `(root) => {...}` body against the active frame's document.
 async fn eval_body_in_active_frame(
     mgr: &BrowserManager,
     frame_id: Option<&str>,
@@ -10235,21 +10225,15 @@ async fn eval_body_in_active_frame(
         Some(fid) if !iframe_sessions.contains_key(fid) => {
             let owner =
                 super::element::frame_owner_object_id(&mgr.client, top_session, fid).await?;
-            let func = format!(
-                "function() {{ const d = this.contentDocument; if (!d) return null; return ({body})(d); }}"
-            );
-            let res = mgr
-                .client
-                .send_command(
-                    "Runtime.callFunctionOn",
-                    Some(serde_json::json!({
-                        "objectId": owner,
-                        "functionDeclaration": func,
-                        "returnByValue": true,
-                    })),
-                    Some(top_session),
-                )
-                .await?;
+            let res = super::element::call_function_in_frame(
+                &mgr.client,
+                top_session,
+                fid,
+                &owner,
+                body,
+                true,
+            )
+            .await?;
             Ok(res
                 .get("result")
                 .and_then(|r| r.get("value"))
